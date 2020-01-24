@@ -43,7 +43,31 @@ string title_lid = "PROJECTED LIDAR MAP";
 
 Eigen::Affine3f transform_sv, transform_vs, transform_sc;
 
-void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cloud){  
+//Function to identify data type in depth image
+string type2str(int type) {
+  string r;
+
+  uchar depth = type & CV_MAT_DEPTH_MASK;
+  uchar chans = 1 + (type >> CV_CN_SHIFT);
+
+  switch ( depth ) {
+    case CV_8U:  r = "8U"; break;
+    case CV_8S:  r = "8S"; break;
+    case CV_16U: r = "16U"; break;
+    case CV_16S: r = "16S"; break;
+    case CV_32S: r = "32S"; break;
+    case CV_32F: r = "32F"; break;
+    case CV_64F: r = "64F"; break;
+    default:     r = "User"; break;
+  }
+
+  r += "C";
+  r += (chans+'0');
+
+  return r;
+}
+
+void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cloud, const CameraInfo::ConstPtr& info){  
   //Depth Image
   cv_bridge::CvImagePtr cv_ptr;
   try
@@ -59,14 +83,15 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
   depth_im = cv_ptr->image;
   int Height = depth_im.rows;
   int Width = depth_im.cols;
+  string ty =  type2str( depth_im.type() );
+//  ROS_INFO("data type in depth image is %s %dx%d \n", ty.c_str(), depth_im.cols, depth_im.rows);
 
-  //image title
-  cv::putText(depth_im, title_dep, cv::Point(Width-500*Width/1920, Height-50*Width/1920), fontFace, 1, 0, 4, cv::LINE_AA);
-
-  //displaying depth image
-  cv::resize(depth_im, depth_im, cv::Size(), 0.5, 0.5);
-  cv::imshow("raw_depth", depth_im);
-  cv::waitKey(100);
+/*  //displaying depth image
+  cv::Mat depth_im1;
+  cv::resize(depth_im, depth_im1, cv::Size(), 0.5, 0.5);
+  cv::putText(depth_im1, title_dep, cv::Point(depth_im1.cols-500*Width/1920, depth_im1.rows-50*Width/1920), fontFace, 1, 0, 2, cv::LINE_AA);
+  cv::imshow("raw_depth", depth_im1);
+  cv::waitKey(100);*/
 
   //Pointcloud processing
   pcl::PointCloud<pcl::PointXYZ>::Ptr lidar_cloud (new pcl::PointCloud<pcl::PointXYZ> ());
@@ -78,7 +103,7 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
   pcl::PassThrough<pcl::PointXYZ> pass_x;
   pass_x.setInputCloud (lidar_cloud);
   pass_x.setFilterFieldName ("x");
-  pass_x.setFilterLimits (0, 100);
+  pass_x.setFilterLimits (0, 100); //for debugging. actual limit should be 100 or even 20 since that's the limit for zed
   pass_x.filter (*filtered_cloud);
 
   //Transforming cloud from velodyne to stereo
@@ -98,7 +123,7 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
   ros_cloud.header = velo_cloud->header;
   transformed_cloud_pub.publish(ros_cloud);
 
-  //Define camerainfo data (from stereo calibration)
+/*  //Define camerainfo data (from stereo calibration)
   CameraInfo cam_info;
   cam_info.header = depth->header;
   cam_info.height = depth->height;
@@ -115,14 +140,14 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
   cam_info.roi.height = 0;
   cam_info.roi.width = 0;
   cam_info.roi.do_rectify = 0;
-
+*/
   //Initiate camera model
   image_geometry::PinholeCameraModel cam_model; // init cam_model
-  cam_model.fromCameraInfo(cam_info); // fill cam_model with CameraInfo
+  cam_model.fromCameraInfo(*info); // fill cam_model with CameraInfo
 
   //Project the points to image using the camera model defined
   cv::Mat velo_im;
-  velo_im = cv::Mat::zeros(Height, Width, CV_32F);
+  velo_im = cv::Mat::zeros(depth_im.size(), depth_im.type());
 
   for (pcl::PointCloud<pcl::PointXYZ>::iterator pt = transformed_cloud->points.begin(); pt < transformed_cloud->points.end(); ++pt){
     cv::Point3f pt_cv(pt->x, pt->y, pt->z);//init Point3f
@@ -130,8 +155,22 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
     if (uv.x < Width && uv.x >= 0 && uv.y < Height && uv.y >= 0)
       velo_im.at<float>(uv.y,uv.x) = pt->z;
   }
-/*
-  //Interpolation attempt - 1
+
+  //Count of velodyne points in camera frame
+  vector<cv::Point> nonzero;  
+  for (int r = 0; r < Height; r++){
+    for (int c = 0; c < Width; c++){
+      if (velo_im.at<float>(r, c) > 0){
+        cv::Point* pnt = new cv::Point;
+        pnt->x = c; pnt->y = r;
+        nonzero.push_back(*pnt);
+        delete pnt;
+      }
+    }
+  }
+  ROS_INFO("Total number points projected to camera frame is %ld", nonzero.size());
+
+/*  //Interpolation attempt - 1
   vector<int> nz;
   for (int c = 0; c < Width; c++){
     for (int r = 0; r < Height; r++){
@@ -151,36 +190,35 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
   }
 */
   //Interpolation attempt - 2
-  vector<int> nz;
-  for (int c = 0; c < Width; c++){
-    for (int r = 0; r < Height; r++){
-      if (velo_im.at<float>(r, c) > 0)
-        nz.push_back(r);
-    }
-    for (int i = 0; i < nz.size(); i++){
-      float depth = velo_im.at<float>(nz[i], c);
+  for (cv::Point pint : nonzero){
+      float depth = velo_im.at<float>(pint);
       for (int j = 0; j < 11; j++){
-        if (nz[i] < (Height - 6))
-          velo_im.at<float>((nz[i]-5+j),c) = depth;
+        if (pint.y < (Height - 6))
+          velo_im.at<float>((pint.y-5+j),pint.x) = depth;
       }
-    }
-    nz.clear();
   }
 
-  //image title
-  cv::putText(velo_im, title_lid, cv::Point(Width/2-500*Width/1920, Height-50*Width/1920), fontFace, 1, 1, 4, cv::LINE_AA);
-
-  //displaying velo image 
-  cv::resize(velo_im, velo_im, cv::Size(), 0.5, 0.5);
-  cv::imshow("velo_depth", velo_im);
-  cv::waitKey(100);
-
-/*  //displaying both images for comparison
-  cv::Mat big_im;
-  cv::hconcat(depth_im, velo_im, big_im);
-  cv::resize(big_im, big_im, cv::Size(), 0.25, 0.25);
-  cv::imshow("Depth_Comparison", big_im);
+/*  //displaying velo image
+  cv::Mat velo_im1;
+  cv::resize(velo_im, velo_im1, cv::Size(), 0.5, 0.5);
+  cv::putText(velo_im1, title_lid, cv::Point((velo_im1.cols)/2-200*Width/1920, velo_im1.rows-50*Width/1920), fontFace, 1, 1, 2, cv::LINE_AA);
+  cv::imshow("velo_depth", velo_im1);
   cv::waitKey(100);*/
+
+  //displaying both images for comparison
+  cv::Mat big_im = cv::Mat::zeros(depth_im.size(), CV_32FC3);;
+//  cv::hconcat(depth_im, velo_im, big_im);
+  for (int r = 0; r < Height; r++){
+    for (int c = 0; c < Width; c++){
+      if (velo_im.at<float>(r, c) > 0)
+        big_im.at<cv::Vec3f>(r, c)[0] = velo_im.at<float>(r, c);
+      else
+        big_im.at<cv::Vec3f>(r, c)[1] = depth_im.at<float>(r, c);
+    }
+  }
+  cv::resize(big_im, big_im, cv::Size(), 0.5, 0.5);
+  cv::imshow("Depth_Comparison", big_im);
+  cv::waitKey(100);
 
 /*  //Benchmarking
   cv::Mat bm_im;
@@ -222,28 +260,31 @@ void param_callback(stereo_depth_correction::calibrationConfig &config, uint32_t
   Eigen::Matrix4f inv; inv << R.inverse(), -R.inverse()*b,
                               0, 0, 0, 1;
   transform_vs.matrix() = inv; //the inverse transformation
-/*
+
+  //For debugging
+  Eigen::Matrix4f transform = transform_sv.matrix();
   ROS_INFO("Velodyne to Stereo Transformation");
-  ROS_INFO("x=%f, y=%f, z=%f, roll=%f, pitch=%f, yaw=%f",trans_x, trans_y, trans_z, roll, pitch, yaw);
-  ROS_INFO("%f, %f, %f, %f",inv(0,0),inv(0,1),inv(0,2),inv(0,3));
-  ROS_INFO("%f, %f, %f, %f",inv(1,0),inv(1,1),inv(1,2),inv(1,3));
-  ROS_INFO("%f, %f, %f, %f",inv(2,0),inv(2,1),inv(2,2),inv(2,3));
-  ROS_INFO("%f, %f, %f, %f",inv(3,0),inv(3,1),inv(3,2),inv(3,3));
-*/
+  ROS_INFO("%f, %f, %f, %f",transform(0,0),transform(0,1),transform(0,2),transform(0,3));
+  ROS_INFO("%f, %f, %f, %f",transform(1,0),transform(1,1),transform(1,2),transform(1,3));
+  ROS_INFO("%f, %f, %f, %f",transform(2,0),transform(2,1),transform(2,2),transform(2,3));
+  ROS_INFO("%f, %f, %f, %f",transform(3,0),transform(3,1),transform(3,2),transform(3,3));
+
 }
 
 int main(int argc, char **argv){
   ros::init(argc, argv, "depth_benchmarking");
   ros::NodeHandle nh_("~");
-  cv::namedWindow("raw_depth", cv::WINDOW_NORMAL);
-  cv::namedWindow("velo_depth", cv::WINDOW_NORMAL);
-//  cv::namedWindow("Depth_Comparison", cv::WINDOW_NORMAL);
+//  cv::namedWindow("raw_depth", cv::WINDOW_NORMAL);
+//  cv::namedWindow("velo_depth", cv::WINDOW_NORMAL);
+  cv::namedWindow("Depth_Comparison", cv::WINDOW_NORMAL);
 
   message_filters::Subscriber<Image> depth_sub;
   message_filters::Subscriber<PointCloud2> velo_cloud_sub;
+  message_filters::Subscriber<CameraInfo> info_sub;
 
   depth_sub.subscribe(nh_, "depth_map", 1);
   velo_cloud_sub.subscribe(nh_, "point_cloud", 1);
+  info_sub.subscribe(nh_, "camera_info", 1);
 
   transformed_cloud_pub = nh_.advertise<PointCloud2> ("transformed_cloud", 1);
 
@@ -258,15 +299,15 @@ int main(int argc, char **argv){
 
   while (ros::ok()){
   //Subscribing to topics
-  typedef message_filters::sync_policies::ApproximateTime<Image, PointCloud2> MySyncPolicy;
-  message_filters::Synchronizer<MySyncPolicy> sync_(MySyncPolicy(10), depth_sub, velo_cloud_sub);
-  sync_.registerCallback(boost::bind(&callback, _1, _2));
+  typedef message_filters::sync_policies::ApproximateTime<Image, PointCloud2, CameraInfo> MySyncPolicy;
+  message_filters::Synchronizer<MySyncPolicy> sync_(MySyncPolicy(10), depth_sub, velo_cloud_sub, info_sub);
+  sync_.registerCallback(boost::bind(&callback, _1, _2, _3));
 
   ros::spin();
   }
 
   ros::waitForShutdown();
-  cv::destroyWindow("raw_depth");
-  cv::destroyWindow("velo_depth");
-//  cv::destroyWindow("Depth_Comparison");
+//  cv::destroyWindow("raw_depth");
+//  cv::destroyWindow("velo_depth");
+  cv::destroyWindow("Depth_Comparison");
 }

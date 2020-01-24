@@ -1,6 +1,10 @@
 <launch>
-  <node pkg="stereo_depth_correction" type="depth_benchmarking" name="depth_benchmarking" output="screen">
-    <remap from="~point_cloud" to="/velodyne_points"/>
-    <remap from="~depth_map" to="/zed_node/depth/depth_registered"/>
-  </node>
+
+    <!-- bench_marking -->
+    <node pkg="stereo_depth_correction" type="depth_benchmarking" name="depth_benchmarking" output="screen">
+        <remap from="~point_cloud" to="/velodyne_points"/>
+        <remap from="~depth_map" to="/zed_node/depth/depth_registered"/>
+        <remap from="~camera_info" to="/zed_node/depth/camera_info"/>
+    </node>
+
 </launch>
