@@ -118,7 +118,7 @@ generate_dynamic_reconfigure_options(
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-#  INCLUDE_DIRS include
+  INCLUDE_DIRS include
 #  LIBRARIES stereo_depth_correction
 #  CATKIN_DEPENDS cv_bridge dynamic_reconfigure image_geometry image_transport message_filters pcl_ros roscpp sensor_msgs std_msgs tf tf_conversions
 #  DEPENDS system_lib
