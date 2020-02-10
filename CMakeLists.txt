@@ -3,6 +3,7 @@ project(stereo_depth_correction)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -w ")
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -24,7 +25,7 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(OpenCV 3 REQUIRED)
 find_package(PCL 1.7 REQUIRED)
 
-
+find_package(CUDA REQUIRED)
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 
@@ -153,12 +154,15 @@ add_definitions(
 ## as an example, code may need to be generated before libraries
 ## either from message generation or dynamic reconfigure
 # add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-
+set(CUDA_NVCC_FLAGS "-arch=compute_60" CACHE STRING "nvcc flags" FORCE)
+set(CUDA_VERBOSE_BUILD ON CACHE BOOL "nvcc verbose" FORCE) 
+set(LIB_TYPE STATIC)
+cuda_add_library(CUDAbfLib ${LIB_TYPE} src/bFilter.cu)
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/stereo_depth_correction_node.cpp)
-add_executable(depth_benchmarking src/depth_benchmarking_2.cpp)
+add_executable(depth_benchmarking src/depth_benchmarking.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -172,6 +176,7 @@ add_executable(depth_benchmarking src/depth_benchmarking_2.cpp)
 add_dependencies(depth_benchmarking
   ${catkin_EXPORTED_TARGETS}
   ${PROJECT_NAME}_gencfg
+  CUDAbfLib
 )
 
 ## Specify libraries to link a library or executable target against
@@ -182,6 +187,7 @@ target_link_libraries(depth_benchmarking
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
   ${PCL_LIBRARIES}
+  CUDAbfLib
 )
 
 #############

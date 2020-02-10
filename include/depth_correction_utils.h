@@ -2,7 +2,7 @@
 #define depth_correction_utils_H
 
 #define PCL_NO_PRECOMPILE
-#define DEBUG 1
+#define DEBUG 0
 
 #include <vector>
 #include <algorithm>
