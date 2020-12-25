@@ -32,7 +32,7 @@
 using namespace std;
 using namespace sensor_msgs;
 
-ros::Publisher transformed_cloud_pub, velo_image_pub, proj_image_pub, seeded_image_pub, benchmark_pub;
+ros::Publisher transformed_cloud_pub, output_image_pub, proj_image_pub, seeded_image_pub;
 
 //Dynamic parameters (data from velo2cam_calibration)
 float trans_x;
@@ -43,12 +43,7 @@ float pitch;
 float yaw;
 
 int mr; //size of bilateral filter
-int grid; //grid size of SparseToDense
-
-//Image titles  
-int fontFace = cv::FONT_HERSHEY_DUPLEX;
-string title_dep = "ORIGINAL DEPTH MAP";
-string title_lid = "PROJECTED LIDAR MAP";
+bool GPU; //To choose multi-threading in GPU
 
 Eigen::Affine3f transform_sv, transform_sc;
 cv::Mat velo_im;
@@ -59,7 +54,8 @@ vector<thread> threads = vector<thread>(cores);
 void bilateralFilter_gpu(const cv::Mat & input, cv::Mat & output, int r);
 
 void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cloud, const CameraInfo::ConstPtr& info){
-
+	
+	ros::Time cycle_start = ros::Time::now();
   	//Depth Image
   	cv_bridge::CvImagePtr cv_ptr;
   	try
@@ -75,21 +71,37 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
   	depth_im = cv_ptr->image;
   	int Height = depth_im.rows;
   	int Width = depth_im.cols;
+
 	if (DEBUG) {
   		string ty =  type2str( depth_im.type() );
-		ROS_INFO("data type in depth image is %s %dx%d", ty.c_str(), depth_im.cols, depth_im.rows);
+		ROS_INFO("\n \n data type in depth image is %s %dx%d", ty.c_str(), depth_im.cols, depth_im.rows);
 		double min_d, max_d;
 		cv::minMaxLoc(depth_im, &min_d, &max_d);
 		ROS_INFO("depth map : min is %f and max is %f", min_d, max_d);
 	}
 
-/*	//displaying depth image
-  	cv::Mat depth_im1;
-  	cv::resize(depth_im, depth_im1, cv::Size(), 0.5, 0.5);
-  	cv::putText(depth_im1, title_dep, cv::Point(depth_im1.cols-500*Width/1920, depth_im1.rows-50*Width/1920), fontFace, 1, 0, 2, cv::LINE_AA);
-  	cv::imshow("raw_depth", depth_im1);
-  	cv::waitKey(100);*/
-	ros::Time cycle_start = ros::Time::now();
+	//Replacing NaN values in depth map with zero
+	int check_ = 0; //to check the number of infinity pixels
+	int check__ = 0; //to check the number of NaN pixels
+  	for (int ro = 0; ro < Height; ro++){
+   		for (int co = 0; co < Width; co++){
+			if (cvIsInf(depth_im.at<float>(ro, co))){
+				check_++;
+   		  		depth_im.at<float>(ro, co) = 0;
+			}
+			else if (cvIsNaN(depth_im.at<float>(ro, co))){
+				check__++;
+   		  		depth_im.at<float>(ro, co) = 0;
+			}
+   		}
+ 	}
+
+	if (DEBUG) {
+		double min_d, max_d;
+		cv::minMaxLoc(depth_im, &min_d, &max_d);
+		ROS_INFO("depth map after processing: min is %f and max is %f", min_d, max_d);
+		ROS_INFO("Total number of pixels with INF and NaN in depth map were %d and %d", check_, check__);
+	}
   	//Pointcloud processing
   	pcl::PointCloud<Velodyne::Point>::Ptr lidar_cloud (new pcl::PointCloud<Velodyne::Point> ());
   	pcl::fromROSMsg(*velo_cloud,*lidar_cloud);
@@ -107,7 +119,7 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
 		}
 	}
 
-	// Remove points which might be occluded by forebround objects due to change of view
+	// Remove points which might be occluded by foreground objects due to change of view
   	pcl::PointCloud<Velodyne::Point>::Ptr view_adjusted_cloud (new pcl::PointCloud<Velodyne::Point> ());
   	vector<vector<Velodyne::Point> > rings = Velodyne::getRings(*filtered_cloud);
 	for (vector<vector<Velodyne::Point> >::iterator ring = rings.begin(); ring < rings.end(); ++ring){
@@ -150,8 +162,6 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
   	//Project the points to image using the camera model defined
 	ros::Time start_proj = ros::Time::now();
   	cv::Mat mD = cv::Mat::zeros(depth_im.size(), depth_im.type());
-//  	cv::Mat mX(depth_im.size(), depth_im.type(), cv::Scalar(1000));
-//  	cv::Mat mY(depth_im.size(), depth_im.type(), cv::Scalar(1000));
   	vector<cv::Point> nonzero;
 	vector<cv::Point> nonzero_lr; //for the lowest ring
 	vector<cv::Point> nonzero_ur; //for the upper most ring
@@ -162,8 +172,6 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
     	int X = (int)round(uv.x); int Y = (int)round(uv.y);
     	if (X < Width && X >= 0 && Y < Height && Y >= 0){
       		mD.at<float>(Y, X) = pt->z;
-//      		mX.at<float>(Y, X) = uv.x - (float)X;
-//      		mY.at<float>(Y, X) = uv.y - (float)Y;
       		cv::Point* pnt = new cv::Point;
       		pnt->x = X; pnt->y = Y;
 			if (pt->ring == 0){
@@ -184,6 +192,12 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
 	double proj_time = (finish_proj - start_proj).toNSec() * 1e-6;
 	if (DEBUG) ROS_INFO_STREAM("Projection time (ms): " << proj_time);
 
+	if (DEBUG) {
+		double min_p, max_p;
+		cv::minMaxLoc(mD, &min_p, &max_p);
+		ROS_INFO("Projected image : min is %f and max is %f", min_p, max_p);
+	}
+
 	//Publishing projected image
 	if (DEBUG) {
   		sensor_msgs::ImagePtr im_msg_1 = cv_bridge::CvImage(std_msgs::Header(), "32FC1", mD).toImageMsg();
@@ -192,14 +206,18 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
 	}
 
 	//Seeding the velodyne depth map from stereo depth map
-	seedMap(depth_im, mD, nonzero, nonzero_lr, nonzero_ur, Height);
+	vector<int> spread = vector<int>(3); //pixel distribution wrt reference in the neighborhood
+	int den; //to define pixel density in neighborhood
+	get_spread(spread, den, Height);
+	if (DEBUG) ROS_INFO("The spread has been chosen as %d , %d and %d", spread[0], spread[1], spread[2]);
+	seedMap(depth_im, mD, nonzero, nonzero_lr, nonzero_ur, Height, Width, spread, den);
 	ros::Time finish_seed = ros::Time::now();
 	double seed_time = (finish_seed - finish_proj).toNSec() * 1e-6;
 	if (DEBUG) ROS_INFO_STREAM("Seeding time (ms): " << seed_time);
 	if (DEBUG) {
 		double min_p, max_p;
 		cv::minMaxLoc(mD, &min_p, &max_p);
-		ROS_INFO("projected image : min is %f and max is %f", min_p, max_p);
+		ROS_INFO("Seeded image : min is %f and max is %f", min_p, max_p);
 	}
 
 	//Publishing seeded image
@@ -211,76 +229,51 @@ void callback(const Image::ConstPtr& depth, const PointCloud2::ConstPtr& velo_cl
 
 	//Creating dense map
   	velo_im = cv::Mat::zeros(depth_im.size(), depth_im.type());
-//	SparseToDense(mX, mY, mD, grid, velo_im);
-/*	for (unsigned int t = 0; t < cores; t++){
-		threads[t] = thread(MyBilateralFilter, ref(mD), ref(velo_im), mr, t, cores);
+	ros::Time start_op = ros::Time::now();
+	if (GPU){
+		bilateralFilter_gpu(mD, velo_im, (mr -1)/2); //Multithreading in GPU
 	}
-	for (unsigned int t = 0; t < cores; t++){
-		threads[t].join();
-	}*/
-	bilateralFilter_gpu(mD, velo_im, (mr -1)/2);
+	else {
+		for (unsigned int t = 0; t < cores; t++){
+			threads[t] = thread(MyBilateralFilter, ref(mD), ref(velo_im), mr, t, cores); //Multithreading in CPU
+		}
+		for (unsigned int t = 0; t < cores; t++){
+			threads[t].join();
+		}
+	}
+
 	ros::Time finish_op = ros::Time::now();
-	double execution_time = (finish_op - finish_seed).toNSec() * 1e-6;
+	double execution_time = (finish_op - start_op).toNSec() * 1e-6;
 	if (DEBUG) ROS_INFO_STREAM("Exectution time (ms): " << execution_time);
-	if (DEBUG) {
-		double min_v, max_v;
-		cv::minMaxLoc(velo_im, &min_v, &max_v);
-		ROS_INFO("Velodyne image : min is %f and max is %f", min_v, max_v);
-	}
+
 
   	//Count of pixels occupied before and after operation
-	if (DEBUG) {
-  		int count_nz = 0;  
-  		for (int r = 0; r < Height; r++){
-    		for (int c = 0; c < Width; c++){
-    	  		if (velo_im.at<float>(r, c) > 0){
-					count_nz++;
-				}
-    		}
-  		}
-		ROS_INFO("Total number points projected to camera frame is %ld and after operation is %d \n", nonzero.size(), count_nz);
-	}
-
-	//Publishing processed velo image
-  	sensor_msgs::ImagePtr im_msg_3 = cv_bridge::CvImage(std_msgs::Header(), "32FC1", velo_im).toImageMsg();
-  	im_msg_3->header = info->header;
-  	velo_image_pub.publish(im_msg_3);
-
-  	//displaying velo image
-/*  	cv::Mat velo_im1;
-  	cv::resize(velo_im, velo_im1, cv::Size(), 0.5, 0.5);
-//	cv::putText(velo_im1, title_lid, cv::Point((velo_im1.cols)/2-200*Width/1920, velo_im1.rows-50*Width/1920), fontFace, 1, 1, 2, cv::LINE_AA);
-  	cv::imshow("velo_depth", velo_im1);
-  	cv::waitKey(100);*/
-
-/* 	cv::Mat velo_im2;
-  	cv::resize(mD, velo_im2, cv::Size(), 0.5, 0.5);
-//	cv::putText(velo_im2, title_lid, cv::Point((velo_im2.cols)/2-200*Width/1920, velo_im2.rows-50*Width/1920), fontFace, 1, 1, 2, cv::LINE_AA);
-  	cv::imshow("raw_depth", velo_im2);
-  	cv::waitKey(100);*/
-
-	//Benchmarking
-  	cv::Mat bm_im;
-  	bm_im = cv::Mat::zeros(Height, Width, CV_32F);
-  	for (int ii = 0; ii < Height; ii++){
-    	for (int jj = 0; jj < Width; jj++){
-        	bm_im.at<float>(ii, jj) = (velo_im.at<float>(ii, jj) - depth_im.at<float>(ii, jj));
+  	int count_nz = 0;
+  	for (int r = 0; r < Height; r++){
+    	for (int c = 0; c < Width; c++){
+    	  	if (velo_im.at<float>(r, c) > 0){
+				count_nz++;
+			}
+			else{
+				velo_im.at<float>(r, c) = std::numeric_limits<float>::quiet_NaN();//to replace zeros with NaN
+			}
     	}
   	}
 
-/*  	//displaying difference image 
-  	cv::resize(bm_im, bm_im, cv::Size(), 0.5, 0.5);
-  	cv::imshow("Depth_Comparison", bm_im);
-  	cv::waitKey(100);*/
-
-	//Publishing benchmark image
-  	sensor_msgs::ImagePtr im_msg_4 = cv_bridge::CvImage(std_msgs::Header(), "32FC1", bm_im).toImageMsg();
-  	im_msg_4->header = info->header;
-  	benchmark_pub.publish(im_msg_4);
+	if (DEBUG) {
+		double min_v, max_v;
+		cv::minMaxLoc(velo_im, &min_v, &max_v);
+		ROS_INFO("Total number points projected to camera frame is %ld and after operation is %d ", nonzero.size(), count_nz);
+		ROS_INFO("Velodyne image : min is %f and max is %f", min_v, max_v);
+	}
+	//Publishing processed velo image
+  	sensor_msgs::ImagePtr im_msg_3 = cv_bridge::CvImage(std_msgs::Header(), "32FC1", velo_im).toImageMsg();
+  	im_msg_3->header = info->header;
+  	output_image_pub.publish(im_msg_3);
 
 	ros::Time cycle_finish = ros::Time::now();
 	double cycle_time = (cycle_finish - cycle_start).toNSec() * 1e-6;
-	if (DEBUG) ROS_INFO_STREAM("Total Cycle time (ms): " << cycle_time);
+	ROS_INFO_STREAM("Total Cycle time (ms): " << cycle_time);
 }
 
 void param_callback(stereo_depth_correction::calibrationConfig &config, uint32_t level){
@@ -297,9 +290,10 @@ void param_callback(stereo_depth_correction::calibrationConfig &config, uint32_t
   	yaw = (float)config.yaw_;
   	ROS_INFO("New yaw angle: %f\n", yaw);
   	mr = config.mr_BF;
-  	ROS_INFO("New size of bilateral filter: %d\n", mr);
-  	grid = config.grid_S2D;
-  	ROS_INFO("New grid size of S2D: %d\n", grid);
+	mr = (mr % 2 == 1) ? mr : mr+1;
+  	ROS_INFO("New size of bilateral filter: %d", mr);
+	GPU = config.GPU_;
+	ROS_INFO("Multi-threading in %s\n", GPU?"GPU":"CPU");
 
   	//Creating transformation matrix from velodyne to stereo
   	transform_sv = pcl::getTransformation(trans_x, trans_y, trans_z, roll, pitch, yaw);
@@ -314,11 +308,8 @@ void param_callback(stereo_depth_correction::calibrationConfig &config, uint32_t
 }
 
 int main(int argc, char **argv){
-  	ros::init(argc, argv, "depth_benchmarking");
+  	ros::init(argc, argv, "depth_correction");
   	ros::NodeHandle nh_("~");
-//  	cv::namedWindow("raw_depth", cv::WINDOW_NORMAL);
-//	cv::namedWindow("velo_depth", cv::WINDOW_NORMAL);
-//	cv::namedWindow("Depth_Comparison", cv::WINDOW_NORMAL);
 
   	message_filters::Subscriber<Image> depth_sub;
   	message_filters::Subscriber<PointCloud2> velo_cloud_sub;
@@ -329,10 +320,9 @@ int main(int argc, char **argv){
   	info_sub.subscribe(nh_, "camera_info", 1);
 
   	transformed_cloud_pub = nh_.advertise<PointCloud2> ("transformed_cloud", 1);
-  	velo_image_pub = nh_.advertise<Image> ("velo_image", 1);
+  	output_image_pub = nh_.advertise<Image> ("output_image", 1);
   	proj_image_pub = nh_.advertise<Image> ("projected_image", 1);
   	seeded_image_pub = nh_.advertise<Image> ("seeded_image", 1);
-  	benchmark_pub = nh_.advertise<Image> ("comparison_image", 1);
 
   	//Initializing dynamic parameters
   	dynamic_reconfigure::Server<stereo_depth_correction::calibrationConfig> server;
@@ -351,9 +341,5 @@ int main(int argc, char **argv){
 
   	ros::spin();
   	}
-
-  	ros::waitForShutdown();
-//  	cv::destroyWindow("raw_depth");
-//	cv::destroyWindow("velo_depth");
-//	cv::destroyWindow("Depth_Comparison");
+	return 0;
 }

@@ -53,8 +53,6 @@ __global__ void gpuCalculation(float* input, float* output, int width, int heigh
 
 void bilateralFilter_gpu(const Mat & input, Mat & output, int r)
 {
-	// Size of image
-//	int im_size = input.cols*input.rows*sizeof(float);
 
 	// Variables to allocate space for input and output GPU variables
 	size_t pitch_in;                                                      // Avoids bank conflicts (Read documentation for further info)

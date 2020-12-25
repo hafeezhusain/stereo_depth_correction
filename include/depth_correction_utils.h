@@ -68,42 +68,79 @@ float distance(int x, int y, int i, int j) {
     return float(sqrt(pow(x - i, 2) + pow(y - j, 2)));
 }
 
-static const vector<int> spread = {-10, 10, 20};
+//To choose the avg of neighbouring values in the short distance region
+float avg_choice(cv::Mat& source, int& x, int& y, int& W){
+	float avg = 0;
+	int coun = 0;
+	for (int m = -4; m < 5; m++){
+		while(x+m >= 0 && x+m < W){
+			if (source.at<float>(y, x+m) != 0){
+				avg = avg + source.at<float>(y, x+m);
+				coun++;
+			}
+			break;
+		}
+	}
+	avg = (coun == 0) ? avg : float(avg/(float)coun);
+	return avg;
+}
 
-void seedMap(cv::Mat& source, cv::Mat& field, vector<cv::Point>& lot, vector<cv::Point>& lot_lr, vector<cv::Point>& lot_ur, int& H){
+//static const vector<int> spread = {-10, 10, 20}; //pixel distribution wrt reference in the neighborhood (try and find the best choice for each resolution)
+void get_spread(vector<int>& spread_, int& density_, int& height){
+	switch (height){
+		case 1242: spread_ = {-10, 10, 20};
+				   density_ = 10;
+				   break;
+		case 1080: spread_ = {-10, 10, 20};
+				   density_ = 10;
+				   break;
+		case 720:  spread_ = {-5, 5, 10};
+				   density_ = 5;
+				   break;
+		case 376:  spread_ = {-2, 2, 4};
+				   density_ = 3;
+				   break;
+		default:   ROS_INFO("The image resolution is not predefined. Please check get_spread function");
+				   break;
+	}
+}
+
+//Seeding process
+void seedMap(cv::Mat& source, cv::Mat& field, vector<cv::Point>& lot, vector<cv::Point>& lot_lr, vector<cv::Point>& lot_ur, int& H, int& W, vector<int>& spread, int& den){
 	for (cv::Point pick : lot){
-		float offset = (source.at<float>(pick) != source.at<float>(pick)) ? 0 : (field.at<float>(pick) - source.at<float>(pick));
+		float offset = (source.at<float>(pick) == 0) ? 0 : (field.at<float>(pick) - source.at<float>(pick));
 		for (int q = 0; q < spread.size(); q++){
-			float choice = (source.at<float>(pick.y+spread[q], pick.x) != source.at<float>(pick.y+spread[q], pick.x)) ? field.at<float>(pick) :  (source.at<float>(pick.y+spread[q], pick.x) + offset);
-			field.at<float>(pick.y+spread[q], pick.x) = (choice >= 0) ? choice : 0;
+			float choice = (source.at<float>(pick.y+spread[q], pick.x) == 0 || offset == 0) ? field.at<float>(pick) :  (source.at<float>(pick.y+spread[q], pick.x) + offset);
+			field.at<float>(pick.y+spread[q], pick.x) = (choice >= 0) ? choice : field.at<float>(pick);
 		}
 	}
 
 	for (cv::Point picks : lot_lr){
-		float offset_ = (source.at<float>(picks) != source.at<float>(picks)) ? 0 : (field.at<float>(picks) - source.at<float>(picks));
-		for (int v = picks.y + 30; v < H; v = v + 10){
-			float choice_ = (source.at<float>(v, picks.x) != source.at<float>(v, picks.x)) ? 0 : (source.at<float>(v, picks.x) + offset_);
+		float offset_ = (source.at<float>(picks) == 0) ? 0 : (field.at<float>(picks) - source.at<float>(picks));
+		for (int v = picks.y + (3 * den); v < H; v = v + den){
+			float choice_ = (source.at<float>(v, picks.x) == 0) ? (avg_choice(source, picks.x, v, W) + offset_) : (source.at<float>(v, picks.x) + offset_);
 			field.at<float>(v, picks.x) = (choice_ >= 0) ? choice_ : 0;
 		}
 	}
 
 	for (cv::Point pic : lot_ur){
-		float offset__ = (source.at<float>(pic) != source.at<float>(pic)) ? 0 : (field.at<float>(pic) - source.at<float>(pic));
-		for (int b = pic.y - 20; b >= 0; b = b - 10){
-			float choice__ = (source.at<float>(b, pic.x) != source.at<float>(b, pic.x)) ? field.at<float>(pic) : (source.at<float>(b, pic.x) + offset__);
+		float offset__ = (source.at<float>(pic) == 0) ? 0 : (field.at<float>(pic) - source.at<float>(pic));
+		for (int b = pic.y - (2 * den); b >= 0; b = b - den){
+			float choice__ = (source.at<float>(b, pic.x) == 0 || offset__ == 0) ? field.at<float>(pic) : (source.at<float>(b, pic.x) + offset__);
 			field.at<float>(b, pic.x) = (choice__ >= 0) ? choice__ : 0;
 		}
 	}
 }
 
+//Clustering algorithm
 void DB_SCAN(vector<tuple<float, int, int>>& S, vector<tuple<float, int, int>>& Si) {
-	float eps = 0.1;
+	float eps = 0.1; //adjustable parameter to control the clustering
 	vector<tuple<float, int, int>> S1, S2, S3, S_2;
 	S1.push_back(S[0]);
 	for(int k = 0; k < S.size() - 1; k++){
 		float rk = get<0>(S[k]);
 		float rl = get<0>(S[k+1]);
-		float DF = abs((rl - rk) / (rl + rk)); //distance function
+		float DF = abs((rl - rk) / (rl + rk)); //distance function of DBSCAN
 		if (DF > eps && S2.empty()){
 			S2.push_back(S[k+1]);
 		}
@@ -123,9 +160,10 @@ void DB_SCAN(vector<tuple<float, int, int>>& S, vector<tuple<float, int, int>>& 
 	else{
 		S_2 = (S2.size() >= S3.size()) ? S2 : S3;
 	}
-	Si = (S1.size() >= S_2.size()) ? S1 : S_2;
+	Si = (S1.size() >= S_2.size()) ? S1 : S_2; //choice of significant cluster
 }
 
+//Bilateral filter
 void applyBilateralFilter(cv::Mat& source, cv::Mat& target, int x, int y, int mr) {
     float r_c = 0;
     float Ws = 0;
@@ -165,8 +203,8 @@ void applyBilateralFilter(cv::Mat& source, cv::Mat& target, int x, int y, int mr
 	}
 }
 
+//Calling bilateral fiter (multithreaded)
 void MyBilateralFilter(cv::Mat& source, cv::Mat& target, int mr, unsigned int t, unsigned int c) {
-    target = cv::Mat::zeros(source.rows,source.cols,CV_32F);
     int width = source.cols;
     int height = source.rows;
     int half = (mr - 1) / 2;
@@ -179,41 +217,15 @@ void MyBilateralFilter(cv::Mat& source, cv::Mat& target, int mr, unsigned int t,
     }
 }
 
-void SparseToDense(const cv::Mat& mX, const cv::Mat& mY, const cv::Mat& mD, int grid, cv::Mat &out){
-    int ng = 2*grid+1;
-    int H = mD.rows;
-    int W = mD.cols;
-    cv::Mat KmX(H-2*grid, W-2*grid, mD.type());
-    cv::Mat KmY(H-2*grid, W-2*grid, mD.type());
-    cv::Mat KmD(H-2*grid, W-2*grid, mD.type());
-    cv::Mat s(H-2*grid, W-2*grid, mD.type());
-    cv::Mat S = cv::Mat::zeros(H-2*grid, W-2*grid, mD.type());
-    cv::Mat Y = cv::Mat::zeros(H-2*grid, W-2*grid, mD.type());
-
-    for (int i = 0; i < ng; i++){
-    	for (int j = 0; j < ng; j++){
-      	KmX = mX(cv::Range(i, H-ng+1+i), cv::Range(j, W-ng+1+j))-(float)grid-1+(float)i;
-      	KmY = mY(cv::Range(i, H-ng+1+i), cv::Range(j, W-ng+1+j))-(float)grid-1+(float)j;
-      	KmD = mD(cv::Range(i, H-ng+1+i), cv::Range(j, W-ng+1+j));
-      	for (int p = 0; p < s.rows; p++){
-        	for (int q = 0; q < s.cols; q++){
-          	if (KmX.at<float>(p, q) > 500 || KmY.at<float>(p, q) > 500)
-            	s.at<float>(p, q) = 0;
-          	else
-            	s.at<float>(p, q) = 1/sqrt(KmX.at<float>(p, q)*KmX.at<float>(p, q) + KmY.at<float>(p, q)*KmY.at<float>(p, q));
-        	}
-      	}
-      	Y += s.mul(KmD);
-      	S += s;
-    	}
-  	}
-
-  	for (int l = grid; l < H-grid; l++){
-    	for (int k = grid; k < W-grid; k++){
-      	if (S.at<float>(l-grid, k-grid) == 0)
-        	S.at<float>(l-grid, k-grid) = 1;
-      	out.at<float>(l, k) = Y.at<float>(l-grid, k-grid) / S.at<float>(l-grid, k-grid);
-    	}
-  	}
+//Calling bilateral filter (single threaded)
+void OldBilateralFilter(cv::Mat& source, cv::Mat& target, int mr) {
+    int width = source.cols;
+    int height = source.rows;
+    int half = (mr - 1) / 2;
+    for(int i = half; i < height - half; i++) {
+        for(int j = half; j < width - half; j++) {
+            applyBilateralFilter(source, target, j, i, mr);
+        }
+    }
 }
 #endif
