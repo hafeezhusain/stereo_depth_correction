@@ -9,9 +9,11 @@ The package contains a single node which synchronously subscribes to three topic
 *depth_map* ([sensor_msgs/Image](http://docs.ros.org/api/sensor_msgs/html/msg/Image.html))
 
 &nbsp;&nbsp;&nbsp;&nbsp;Depth image published by the stereo camera (In the reference frame of left camera)
+
 *point_cloud* ([sensor_msgs/PointCloud2](http://docs.ros.org/api/sensor_msgs/html/msg/PointCloud2.html))
 
 &nbsp;&nbsp;&nbsp;&nbsp;Pointcloud published by LiDAR
+
 *camera_info* ([sensor_msgs/CameraInfo](http://docs.ros.org/api/sensor_msgs/html/msg/CameraInfo.html))
 
 &nbsp;&nbsp;&nbsp;&nbsp;Camera_info parameters corresponding to the depth image, published by the stereo camera
@@ -20,13 +22,17 @@ The package contains a single node which synchronously subscribes to three topic
 *output_image* ([sensor_msgs/Image](http://docs.ros.org/api/sensor_msgs/html/msg/Image.html))
 
 &nbsp;&nbsp;&nbsp;&nbsp;Depth image with improved accuracy (In the reference frame of left stereo camera with same time stamp as input)
+
 **Note**: The additional three topics are published for debugging purposes
+
 *transformed_cloud* ([sensor_msgs/PointCloud2](http://docs.ros.org/api/sensor_msgs/html/msg/PointCloud2.html))
 
 &nbsp;&nbsp;&nbsp;&nbsp;LiDAR pointcloud transformed to left stereo camera reference frame
+
 *projected_image* ([sensor_msgs/Image](http://docs.ros.org/api/sensor_msgs/html/msg/Image.html))
 
 &nbsp;&nbsp;&nbsp;&nbsp;Projection image of LiDAR pointcloud
+
 *seeded_image* ([sensor_msgs/Image](http://docs.ros.org/api/sensor_msgs/html/msg/Image.html))
 
 &nbsp;&nbsp;&nbsp;&nbsp;Projection image after seeding process\[1\]
