@@ -59,4 +59,4 @@ A sample .launch file is provided in this package. The simplest way to launch th
 # Citation #
 \[1\] H. H. Cholakkal, S. Mentasti, M. Bersani, S. Arrigoni, M. Matteucci and F. Cheli, "LiDAR - Stereo Camera Fusion for Accurate Depth Estimation," *2020 AEIT International Conference of Electrical and Electronic Technologies for Automotive (AEIT AUTOMOTIVE), Torino, Italy, 2020, pp. 1-6*.
 
-Pre-print available [here](https://ieeexplore.ieee.org/abstract/document/9307398)
+Download the paper from [here](https://ieeexplore.ieee.org/abstract/document/9307398)
